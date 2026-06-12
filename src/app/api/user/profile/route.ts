@@ -19,6 +19,7 @@ export async function GET() {
         email: true,
         level: true,
         goal: true,
+        metadata: true,
         image: true,
         streak: true,
         plan: true,
@@ -37,7 +38,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const { name, level, goal } = await req.json()
+    const { name, level, goal, metadata } = await req.json()
 
     if (level && !VALID_LEVELS.includes(level)) {
       return NextResponse.json({ error: "Invalid level" }, { status: 400 })
@@ -49,8 +50,9 @@ export async function PATCH(req: NextRequest) {
         ...(name !== undefined && { name: String(name).trim().slice(0, 100) }),
         ...(level !== undefined && { level }),
         ...(goal !== undefined && { goal: String(goal).trim().slice(0, 200) }),
+        ...(metadata !== undefined && { metadata }),
       },
-      select: { id: true, name: true, email: true, level: true, goal: true, image: true },
+      select: { id: true, name: true, email: true, level: true, goal: true, metadata: true, image: true },
     })
 
     return NextResponse.json({ user })

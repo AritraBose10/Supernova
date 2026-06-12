@@ -31,6 +31,4 @@ export default async function TopicPracticePage({ params }: Props) {
   )
 }
 
-export async function generateStaticParams() {
-  return TOPICS.map((t) => ({ topic: t.id }))
-}
+export const dynamic = "force-dynamic"

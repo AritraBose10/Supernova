@@ -1,4 +1,3 @@
-import { auth } from "../../../../auth"
 import { prisma } from "@/lib/db"
 import { TOPICS } from "@/lib/topics"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
@@ -7,6 +6,7 @@ import { getStreakLabel } from "@/lib/utils"
 import { Flame, Mic2, TrendingUp, BookOpen } from "lucide-react"
 
 export default async function ProgressPage() {
+  const { auth } = await import("../../../../auth")
   const session = await auth()
   const userId = session?.user?.id!
 

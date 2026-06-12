@@ -1,9 +1,9 @@
-import { auth } from "../../../../auth"
 import { prisma } from "@/lib/db"
 import { TOPICS } from "@/lib/topics"
 import Link from "next/link"
 
 export default async function HomePage() {
+  const { auth } = await import("../../../../auth")
   const session = await auth()
   const userId = session?.user?.id
 

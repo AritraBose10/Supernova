@@ -43,6 +43,16 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  // Refs that stay current for use inside event listeners (visibilitychange, beforeunload)
+  const sessionActiveRef = useRef(false)
+  const messagesRef = useRef<Message[]>([])
+  const durationRef = useRef(0)
+  const sessionSavedRef = useRef(false)
+
+  useEffect(() => { sessionActiveRef.current = sessionActive }, [sessionActive])
+  useEffect(() => { messagesRef.current = messages }, [messages])
+  useEffect(() => { durationRef.current = duration }, [duration])
+
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages, isTranscribing])
 
   const speak = useCallback((text: string) => {
@@ -153,14 +163,17 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
   }, [isRecording])
 
   const endSession = useCallback(async () => {
+    if (sessionSavedRef.current) return
+    sessionSavedRef.current = true
+
     if (timerRef.current) clearInterval(timerRef.current)
     mediaRecorderRef.current?.stop()
     window.speechSynthesis?.cancel()
     setIsRecording(false); setIsSpeaking(false); setSessionEnded(true); setIsSaving(true)
 
-    const scores = pronunciationScoresRef.current
-    const avgPronunciation = scores.length > 0
-      ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+    const pScores = pronunciationScoresRef.current
+    const avgPronunciation = pScores.length > 0
+      ? Math.round(pScores.reduce((a, b) => a + b, 0) / pScores.length)
       : undefined
 
     try {
@@ -168,16 +181,16 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           topicId,
-          durationSec: duration,
+          durationSec: durationRef.current,
           pronunciationScore: avgPronunciation,
-          messages: messages.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+          messages: messagesRef.current.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
         }),
       })
       const data = await res.json()
       if (res.ok) { setScores(data.scores); onSessionEnd?.(data.scores) }
     } catch { setError("Failed to save session") }
     finally { setIsSaving(false) }
-  }, [messages, topicId, duration, onSessionEnd])
+  }, [topicId, onSessionEnd])
 
   useEffect(() => {
     return () => {
@@ -186,6 +199,46 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
       window.speechSynthesis?.cancel()
     }
   }, [])
+
+  // Auto-save when user switches tabs/apps or closes the page
+  useEffect(() => {
+    function autoSave() {
+      if (!sessionActiveRef.current || sessionSavedRef.current) return
+      if (messagesRef.current.length <= 1) return // only intro, nothing to save
+      endSession()
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) autoSave()
+    }
+
+    // sendBeacon for hard closes where async fetch won't complete
+    function handleBeforeUnload() {
+      if (!sessionActiveRef.current || sessionSavedRef.current) return
+      if (messagesRef.current.length <= 1) return
+      sessionSavedRef.current = true
+      const pScores = pronunciationScoresRef.current
+      const avgPronunciation = pScores.length > 0
+        ? Math.round(pScores.reduce((a, b) => a + b, 0) / pScores.length)
+        : undefined
+      navigator.sendBeacon(
+        "/api/sessions",
+        new Blob([JSON.stringify({
+          topicId,
+          durationSec: durationRef.current,
+          pronunciationScore: avgPronunciation,
+          messages: messagesRef.current.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+        })], { type: "application/json" })
+      )
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      window.removeEventListener("beforeunload", handleBeforeUnload)
+    }
+  }, [endSession, topicId])
 
   if (sessionEnded && scores) {
     return (
@@ -225,7 +278,7 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
           <Button variant="primary" size="lg" className="flex-1" onClick={() => {
             setMessages([]); setGeminiHistory([]); setSessionEnded(false)
             setScores(null); setDuration(0); setSessionActive(false)
-            pronunciationScoresRef.current = []
+            pronunciationScoresRef.current = []; sessionSavedRef.current = false
           }}>
             Practice Again
           </Button>
@@ -254,20 +307,13 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel() }}
-            style={{ touchAction: "manipulation", minWidth: 44, minHeight: 44 }}
-            className="flex items-center justify-center rounded-lg text-[var(--text-3)] hover:bg-[var(--surface-2)] transition-colors cursor-pointer"
-          >
-            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-          </button>
-          {sessionActive && (
-            <Button variant="ghost" size="sm" onClick={endSession} className="text-[var(--text-2)] gap-1">
-              <Square className="w-3 h-3" /> End
-            </Button>
-          )}
-        </div>
+        <button
+          onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel() }}
+          style={{ touchAction: "manipulation", minWidth: 44, minHeight: 44 }}
+          className="flex items-center justify-center rounded-lg text-[var(--text-3)] hover:bg-[var(--surface-2)] transition-colors cursor-pointer"
+        >
+          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+        </button>
       </div>
 
       {/* Messages */}
@@ -369,6 +415,15 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
             <p className="text-[11px] text-[var(--text-3)]">
               {isRecording ? "Release to send" : isThinking ? "Tutor is thinking…" : isTranscribing ? "Processing…" : "Hold to speak"}
             </p>
+            <button
+              onClick={endSession}
+              disabled={isSaving}
+              style={{ touchAction: "manipulation", minHeight: 36 }}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[12px] font-medium text-[var(--error)] border border-[var(--error)]/30 hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-40"
+            >
+              <Square className="w-3 h-3" />
+              End Session
+            </button>
           </div>
         )}
       </div>

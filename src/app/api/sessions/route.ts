@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { topicId, durationSec, messages } = await req.json()
+    const { topicId, durationSec, messages, pronunciationScore } = await req.json()
 
     if (!topicId || typeof durationSec !== "number") {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 })
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    const scores = await evaluateSession(messages || [])
+    const scores = await evaluateSession(messages || [], typeof pronunciationScore === "number" ? pronunciationScore : undefined)
 
     await prisma.conversationSession.update({
       where: { id: convSession.id },

@@ -30,12 +30,12 @@ export default function SignupPage() {
     const data = await res.json()
     if (!res.ok) { setError(data.error || "Something went wrong"); setLoading(false); return }
     await signIn("credentials", { email: form.email, password: form.password, redirect: false })
-    router.push("/home")
+    router.push("/onboarding")
   }
 
   async function handleGoogle() {
     setGoogleLoading(true)
-    await signIn("google", { callbackUrl: "/home" })
+    await signIn("google", { callbackUrl: "/onboarding" })
   }
 
   return (

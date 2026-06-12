@@ -12,20 +12,6 @@ interface GeminiMessage { role: "user" | "model"; parts: Array<{ text: string }>
 interface ScoreResult { pronunciation: number; grammar: number; vocabulary: number; overall: number; feedback: string }
 interface VoiceInterfaceProps { topicId: string; onSessionEnd?: (scores: ScoreResult) => void }
 
-type SpeechRecognitionType = {
-  lang: string; interimResults: boolean; maxAlternatives: number
-  onresult: (e: { results: { [k: number]: { [k: number]: { transcript: string } } } }) => void
-  onerror: (e: { error: string }) => void; onend: () => void
-  start: () => void; stop: () => void; abort: () => void
-}
-
-declare global {
-  interface Window {
-    SpeechRecognition: new () => SpeechRecognitionType
-    webkitSpeechRecognition: new () => SpeechRecognitionType
-  }
-}
-
 const TOPIC_INTROS: Record<string, string> = {
   "job-interview": "Hello! I'm Sarah from TechGlobal Solutions. Thanks for coming in today — we're excited to meet you. Let's start easy: could you tell me a little about yourself and your work experience so far?",
   "travel": "Hi there! Welcome to Terminal 2. Looks like you might be a little turned around — can I help you? Where are you headed today?",
@@ -40,6 +26,7 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [geminiHistory, setGeminiHistory] = useState<GeminiMessage[]>([])
   const [isRecording, setIsRecording] = useState(false)
+  const [isTranscribing, setIsTranscribing] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isThinking, setIsThinking] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
@@ -49,22 +36,14 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
   const [scores, setScores] = useState<ScoreResult | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [interimText, setInterimText] = useState("")
-  const [supported, setSupported] = useState(true)
 
-  const recognitionRef = useRef<SpeechRecognitionType | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const pronunciationScoresRef = useRef<number[]>([])
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SR) { setSupported(false); return }
-    const r = new SR()
-    r.lang = "en-US"; r.interimResults = true; r.maxAlternatives = 1
-    recognitionRef.current = r
-  }, [])
-
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages, interimText])
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages, isTranscribing])
 
   const speak = useCallback((text: string) => {
     if (isMuted || !("speechSynthesis" in window)) return
@@ -108,45 +87,91 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
     speak(intro)
   }, [topicId, topic.label, addMessage, speak])
 
-  const startRecording = useCallback(() => {
-    if (!recognitionRef.current || isRecording || isThinking || isSpeaking) return
-    window.speechSynthesis.cancel(); setIsSpeaking(false)
-    const r = recognitionRef.current
-    setInterimText("")
-    r.onresult = (event) => {
-      let final = "", interim = ""
-      for (let i = 0; i < Object.keys(event.results).length; i++) {
-        const res = event.results[i]
-        if (res[0]) {
-          if (i === Object.keys(event.results).length - 1) interim = res[0].transcript
-          else final += res[0].transcript + " "
+  const startRecording = useCallback(async () => {
+    if (isRecording || isTranscribing || isThinking || isSpeaking) return
+    window.speechSynthesis?.cancel(); setIsSpeaking(false)
+    setError(null)
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "audio/mp4"
+
+      const recorder = new MediaRecorder(stream, { mimeType })
+      audioChunksRef.current = []
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data)
+      }
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        const blob = new Blob(audioChunksRef.current, { type: mimeType })
+        if (blob.size < 1000) return
+
+        setIsTranscribing(true)
+        try {
+          const fd = new FormData()
+          const ext = mimeType.includes("mp4") ? "mp4" : "webm"
+          fd.append("audio", blob, `speech.${ext}`)
+          const res = await fetch("/api/transcribe", { method: "POST", body: fd })
+          const data = await res.json()
+
+          if (!res.ok || !data.transcript?.trim()) {
+            setError("Could not understand audio. Please try again.")
+            return
+          }
+
+          addMessage("user", data.transcript.trim())
+          if (typeof data.pronunciationScore === "number") {
+            pronunciationScoresRef.current.push(data.pronunciationScore)
+          }
+          await sendToAI(data.transcript.trim())
+        } catch {
+          setError("Transcription failed. Please try again.")
+        } finally {
+          setIsTranscribing(false)
         }
       }
-      setInterimText(interim)
-      if (final) { setInterimText(""); addMessage("user", final.trim()); sendToAI(final.trim()) }
-    }
-    r.onerror = (e) => {
-      if (e.error !== "no-speech" && e.error !== "aborted") setError(`Speech error: ${e.error}`)
-      setIsRecording(false); setInterimText("")
-    }
-    r.onend = () => {
-      setIsRecording(false)
-      const t = interimText.trim()
-      if (t) { setInterimText(""); addMessage("user", t); sendToAI(t) }
-    }
-    r.start(); setIsRecording(true)
-  }, [isRecording, isThinking, isSpeaking, interimText, addMessage, sendToAI])
 
-  const stopRecording = useCallback(() => { recognitionRef.current?.stop(); setIsRecording(false) }, [])
+      mediaRecorderRef.current = recorder
+      recorder.start()
+      setIsRecording(true)
+    } catch {
+      setError("Microphone access denied. Please allow microphone access and try again.")
+    }
+  }, [isRecording, isTranscribing, isThinking, isSpeaking, addMessage, sendToAI])
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+    }
+  }, [isRecording])
 
   const endSession = useCallback(async () => {
     if (timerRef.current) clearInterval(timerRef.current)
-    recognitionRef.current?.abort(); window.speechSynthesis.cancel()
+    mediaRecorderRef.current?.stop()
+    window.speechSynthesis?.cancel()
     setIsRecording(false); setIsSpeaking(false); setSessionEnded(true); setIsSaving(true)
+
+    const scores = pronunciationScoresRef.current
+    const avgPronunciation = scores.length > 0
+      ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+      : undefined
+
     try {
       const res = await fetch("/api/sessions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topicId, durationSec: duration, messages: messages.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })) }),
+        body: JSON.stringify({
+          topicId,
+          durationSec: duration,
+          pronunciationScore: avgPronunciation,
+          messages: messages.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+        }),
       })
       const data = await res.json()
       if (res.ok) { setScores(data.scores); onSessionEnd?.(data.scores) }
@@ -157,20 +182,10 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
-      recognitionRef.current?.abort(); window.speechSynthesis.cancel()
+      mediaRecorderRef.current?.stop()
+      window.speechSynthesis?.cancel()
     }
   }, [])
-
-  if (!supported) {
-    return (
-      <div className="flex items-center justify-center h-full px-6 text-center">
-        <div>
-          <p className="text-[var(--text-2)] text-[13px] font-medium">Speech recognition not supported</p>
-          <p className="text-[12px] text-[var(--text-3)] mt-1">Please open this app in Chrome or Edge to use the microphone.</p>
-        </div>
-      </div>
-    )
-  }
 
   if (sessionEnded && scores) {
     return (
@@ -210,6 +225,7 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
           <Button variant="primary" size="lg" className="flex-1" onClick={() => {
             setMessages([]); setGeminiHistory([]); setSessionEnded(false)
             setScores(null); setDuration(0); setSessionActive(false)
+            pronunciationScoresRef.current = []
           }}>
             Practice Again
           </Button>
@@ -220,6 +236,8 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
       </div>
     )
   }
+
+  const busy = isThinking || isSpeaking || isSaving || isTranscribing
 
   return (
     <div className="flex flex-col h-full">
@@ -238,7 +256,7 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis.cancel() }}
+            onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel() }}
             style={{ touchAction: "manipulation", minWidth: 44, minHeight: 44 }}
             className="flex items-center justify-center rounded-lg text-[var(--text-3)] hover:bg-[var(--surface-2)] transition-colors cursor-pointer"
           >
@@ -286,10 +304,13 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
           </div>
         ))}
 
-        {interimText && (
-          <div className="flex gap-2 max-w-[85%] ml-auto flex-row-reverse opacity-50">
+        {isTranscribing && (
+          <div className="flex gap-2 max-w-[85%] ml-auto flex-row-reverse opacity-60">
             <div className="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold bg-[var(--primary)] text-white">Y</div>
-            <div className="px-3 py-2 rounded-2xl text-[13px] bg-[var(--primary)]/60 text-white rounded-tr-sm italic">{interimText}</div>
+            <div className="px-3 py-2 rounded-2xl text-[13px] bg-[var(--primary)]/50 text-white rounded-tr-sm italic flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" />
+              Transcribing…
+            </div>
           </div>
         )}
 
@@ -323,12 +344,13 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
         ) : (
           <div className="flex flex-col items-center gap-2">
             {isSpeaking && <p className="text-[11px] text-[var(--text-3)]">Tutor is speaking…</p>}
+            {isTranscribing && !isSpeaking && <p className="text-[11px] text-[var(--text-3)]">Transcribing your speech…</p>}
             <div className="relative">
               <button
                 onPointerDown={startRecording}
                 onPointerUp={stopRecording}
                 onPointerLeave={stopRecording}
-                disabled={isThinking || isSpeaking || isSaving}
+                disabled={busy}
                 style={{ touchAction: "manipulation", width: 64, height: 64 }}
                 className={cn(
                   "rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer",
@@ -345,7 +367,7 @@ export function VoiceInterface({ topicId, onSessionEnd }: VoiceInterfaceProps) {
               </button>
             </div>
             <p className="text-[11px] text-[var(--text-3)]">
-              {isRecording ? "Release to send" : isThinking ? "Tutor is thinking…" : "Hold to speak"}
+              {isRecording ? "Release to send" : isThinking ? "Tutor is thinking…" : isTranscribing ? "Processing…" : "Hold to speak"}
             </p>
           </div>
         )}

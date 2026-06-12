@@ -32,7 +32,8 @@ export async function getAIResponse(
 }
 
 export async function evaluateSession(
-  messages: Array<{ role: string; content: string }>
+  messages: Array<{ role: string; content: string }>,
+  pronunciationScore?: number
 ): Promise<{
   pronunciation: number
   grammar: number
@@ -55,7 +56,12 @@ export async function evaluateSession(
     }
   }
 
-  const prompt = `Analyze this English speech from a language learner and respond ONLY with a JSON object (no markdown, no extra text):
+  const pronunciationNote = pronunciationScore !== undefined
+    ? `Pronunciation has already been scored at ${pronunciationScore}/100 by audio analysis — do NOT include it in your JSON.`
+    : ""
+
+  const prompt = `Analyze this English speech from a language learner and respond ONLY with a JSON object (no markdown, no extra text).
+${pronunciationNote}
 
 Speech:
 ${userMessages}
@@ -74,10 +80,11 @@ Respond with exactly this JSON format:
     const text = response.choices[0]?.message?.content?.trim() || ""
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     const parsed = JSON.parse(jsonMatch?.[0] || text)
-    const pronunciation = Math.round((parsed.grammar + parsed.vocabulary) / 2)
+
+    const pronunciation = pronunciationScore ?? Math.round((parsed.grammar + parsed.vocabulary) / 2)
 
     return {
-      pronunciation,
+      pronunciation: Math.min(100, Math.max(0, pronunciation)),
       grammar: Math.min(100, Math.max(0, parsed.grammar)),
       vocabulary: Math.min(100, Math.max(0, parsed.vocabulary)),
       overall: Math.min(100, Math.max(0, parsed.overall)),
@@ -85,7 +92,7 @@ Respond with exactly this JSON format:
     }
   } catch {
     return {
-      pronunciation: 70,
+      pronunciation: pronunciationScore ?? 70,
       grammar: 70,
       vocabulary: 70,
       overall: 70,

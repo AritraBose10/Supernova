@@ -1,8 +1,26 @@
+import { redirect } from "next/navigation"
+import { auth } from "../../../auth"
+import { prisma } from "@/lib/db"
 import { Sidebar } from "@/components/dashboard/sidebar"
 
 export const dynamic = "force-dynamic"
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const session = await auth()
+
+  if (!session?.user?.id) {
+    redirect("/login")
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { goal: true },
+  })
+
+  if (!user?.goal) {
+    redirect("/onboarding")
+  }
+
   return (
     <div className="flex min-h-screen bg-[var(--bg)]">
       <Sidebar />

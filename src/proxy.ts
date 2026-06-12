@@ -9,7 +9,7 @@ export function proxy(req: NextRequest) {
     req.cookies.get("__Secure-authjs.session-token")?.value
   const isLoggedIn = !!sessionToken
 
-  const publicPaths = ["/login", "/signup", "/api/auth"]
+  const publicPaths = ["/login", "/signup", "/onboarding", "/api/auth"]
   const isPublic = publicPaths.some((p) => pathname.startsWith(p))
 
   if (!isLoggedIn && !isPublic) {

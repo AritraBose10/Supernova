@@ -5,17 +5,28 @@ import Credentials from "next-auth/providers/credentials"
 import { prisma } from "@/lib/db"
 import bcrypt from "bcryptjs"
 
-// NextAuth v5 calls new URL(AUTH_URL) at module evaluation time.
-// On Vercel serverless, next.config.ts does NOT run — only Vercel's env vars do.
-// Set a safe fallback here so every cold-start has a valid URL even if the
-// env var is absent. VERCEL_URL is injected automatically by Vercel for every
-// deployment; we prefer it over the hardcoded production URL so preview
-// deployments also work.
-if (!process.env.AUTH_URL && !process.env.NEXTAUTH_URL) {
-  process.env.AUTH_URL = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : "https://supernova-six-mauve.vercel.app"
-}
+// NextAuth v5 calls new URL(AUTH_URL) at module evaluation time, crashing
+// with "TypeError: Invalid URL" if the env var is absent, empty, or malformed.
+// This runs before the NextAuth() call to guarantee a parseable URL regardless
+// of what Vercel's environment variables contain.
+;(() => {
+  const PROD = "https://supernova-six-mauve.vercel.app"
+  const candidates = [
+    process.env.AUTH_URL,
+    process.env.NEXTAUTH_URL,
+    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
+    PROD,
+  ]
+  for (const raw of candidates) {
+    if (!raw) continue
+    try {
+      const url = new URL(raw).href
+      process.env.AUTH_URL = url
+      process.env.NEXTAUTH_URL = url
+      return
+    } catch {}
+  }
+})()
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   adapter: PrismaAdapter(prisma),
